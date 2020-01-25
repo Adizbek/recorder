@@ -24,7 +24,7 @@ class Recorder {
     private isrecording: boolean;               // 是否正在录音
     private isplaying: boolean = false;         // 是否正在播放
     private ispause: boolean;                   // 是否是暂停
-    private context: any;
+    private context: AudioContext ;
     private config: recorderConfig;             // 配置
     private size: number;                       // 录音文件总长度
     private lBuffer: Array<Float32Array> = [];  // pcm音频数据搜集器(左声道)
@@ -33,7 +33,7 @@ class Recorder {
     private tempPCM: Array<DataView> = [];      // 边录边转时临时存放pcm的
     private audioInput: any;
     private inputSampleRate: number;            // 输入采样率
-    private source: any;                        // 音频输入
+    private source: AudioBufferSourceNode;                        // 音频输入
     private recorder: any;
     private inputSampleBits: number = 16;       // 输入采样位数
     private outputSampleRate: number;           // 输出采样率
@@ -46,6 +46,7 @@ class Recorder {
     private totalPlayTime: number = 0;          // 音频播放总长度
     private offset: number = 0;                 // 边录边转，记录外部的获取偏移位置
     private stream: any;                        // 流
+    private playFinishedCallback: EventListenerOrEventListenerObject = null;
 
     public fileSize: number = 0;                // 录音大小，byte为单位
     public duration: number;                    // 录音时长
@@ -58,6 +59,7 @@ class Recorder {
         vol: number,
         data: Array<DataView>,      // 当前存储的所有录音数据
     }) => void;
+
     /**
      * @param {Object} options 包含以下三个参数：
      * sampleBits，采样位数，一般8,16，默认16
@@ -84,7 +86,7 @@ class Recorder {
         this.outputSampleRate = this.config.sampleRate;     // 输出采样率
         this.oututSampleBits = this.config.sampleBits;      // 输出采样数位 8, 16
         // 判断端字节序
-        this.littleEdian = (function() {
+        this.littleEdian = (function () {
             let buffer = new ArrayBuffer(2);
             new DataView(buffer).setInt16(0, 256, true);
             return new Int16Array(buffer)[0] === 256;
@@ -93,7 +95,7 @@ class Recorder {
         this.initUserMedia();
     }
 
-    /** 
+    /**
      * 初始化录音实例
      */
     initRecorder(): void {
@@ -102,7 +104,7 @@ class Recorder {
             this.destroy();
         }
         this.context = new (window.AudioContext || window.webkitAudioContext)();
-        
+
         this.analyser = this.context.createAnalyser();  // 录音分析节点
         this.analyser.fftSize = 2048;                   // 表示存储频域的大小
 
@@ -114,14 +116,14 @@ class Recorder {
         // 音频采集
         this.recorder.onaudioprocess = e => {
             if (!this.isrecording || this.ispause) {
-                // 不在录音时不需要处理，FF 在停止录音后，仍会触发 audioprocess 事件
+                // 不在录音时不需要处理，FF 在停止录音后，仍会触发 audioprocess 事件k
                 return;
             }
             // 左声道数据
             // getChannelData返回Float32Array类型的pcm数据
             let lData = e.inputBuffer.getChannelData(0),
-                rData = null,
-                vol = 0;        // 音量百分比
+              rData = null,
+              vol = 0;        // 音量百分比
 
             this.lBuffer.push(new Float32Array(lData));
 
@@ -144,8 +146,8 @@ class Recorder {
                 this.fileSize = pcm.byteLength * this.tempPCM.length;
             } else {
                 // 计算录音大小
-                this.fileSize = Math.floor(this.size / Math.max( this.inputSampleRate / this.outputSampleRate, 1))
-                    * (this.oututSampleBits / 8)
+                this.fileSize = Math.floor(this.size / Math.max(this.inputSampleRate / this.outputSampleRate, 1))
+                  * (this.oututSampleBits / 8)
             }
             // 为何此处计算大小需要分开计算。原因是先录后转时，是将所有数据一起处理，边录边转是单个 4096 处理，
             // 有小数位的偏差。
@@ -201,7 +203,7 @@ class Recorder {
             this.recorder.connect(this.context.destination);
         });
     }
-    
+
     /**
      * 暂停录音
      *
@@ -348,7 +350,7 @@ class Recorder {
      */
     getNextData() {
         let length = this.tempPCM.length,
-            data = this.tempPCM.slice(this.offset);
+          data = this.tempPCM.slice(this.offset);
 
         this.offset = length;
 
@@ -375,7 +377,11 @@ class Recorder {
 
             // 记录当前的时间戳，以备暂停时使用
             this.playStamp = this.context.currentTime;
-        }, function(e) {
+
+            if (this.playFinishedCallback) {
+                this.source.addEventListener('ended', this.playFinishedCallback);
+            }
+        }, function (e) {
             Recorder.throwError(e);
         });
     }
@@ -383,7 +389,7 @@ class Recorder {
     /**
      * 获取当前录音的波形数据，
      * 调取频率由外部控制。
-     * 
+     *
      * @memberof Recorder
      */
     getRecordAnalyseData() {
@@ -396,34 +402,34 @@ class Recorder {
         // 将数据拷贝到dataArray中。
         this.analyser.getByteTimeDomainData(dataArray);
 
-        return ( this.prevDomainData = dataArray);
+        return (this.prevDomainData = dataArray);
     }
 
     /**
      * 获取录音播放时的波形数据，
-     * 
+     *
      * @memberof Recorder
      */
     getPlayAnalyseData() {
         // 现在录音和播放不允许同时进行，所有复用的录音的analyser节点。
         return this.getRecordAnalyseData();
     }
-    
+
     // getUserMedia 版本兼容
     private initUserMedia() {
         if (navigator.mediaDevices === undefined) {
             navigator.mediaDevices = {};
         }
-        
+
         if (navigator.mediaDevices.getUserMedia === undefined) {
-            navigator.mediaDevices.getUserMedia = function(constraints) {
+            navigator.mediaDevices.getUserMedia = function (constraints) {
                 let getUserMedia = navigator.getUserMedia || navigator.webkitGetUserMedia || navigator.mozGetUserMedia;
-                
+
                 if (!getUserMedia) {
                     return Promise.reject(new Error('浏览器不支持 getUserMedia !'));
                 }
-                
-                return new Promise(function(resolve, reject) {
+
+                return new Promise(function (resolve, reject) {
                     getUserMedia.call(navigator, constraints, resolve, reject);
                 });
             }
@@ -440,9 +446,9 @@ class Recorder {
         if (this.tempPCM.length) {
             // 优先使用边录边存下的
             // 将存下的 DataView 数据合并了
-            let buffer = new ArrayBuffer( this.tempPCM.length * this.tempPCM[0].byteLength ),
-                pcm = new DataView(buffer),
-                offset = 0;
+            let buffer = new ArrayBuffer(this.tempPCM.length * this.tempPCM[0].byteLength),
+              pcm = new DataView(buffer),
+              offset = 0;
 
             // 遍历存储数据
             this.tempPCM.forEach((block) => {
@@ -477,7 +483,7 @@ class Recorder {
     getPCMBlob() {
         // 先停止
         this.stop();
-        return new Blob([ this.getPCM() ]);
+        return new Blob([this.getPCM()]);
     }
 
     /**
@@ -488,7 +494,7 @@ class Recorder {
      */
     downloadPCM(name: string = 'recorder'): void {
         let pcmBlob = this.getPCMBlob();
-        
+
         this.download(pcmBlob, name, 'pcm');
     }
 
@@ -500,8 +506,8 @@ class Recorder {
      */
     private getWAV() {
         let pcmTemp = this.getPCM(),
-            wavTemp = Recorder.encodeWAV(pcmTemp, this.inputSampleRate, 
-                this.outputSampleRate, this.config.numChannels, this.oututSampleBits, this.littleEdian);
+          wavTemp = Recorder.encodeWAV(pcmTemp, this.inputSampleRate,
+            this.outputSampleRate, this.config.numChannels, this.oututSampleBits, this.littleEdian);
 
         return wavTemp;
     }
@@ -515,7 +521,7 @@ class Recorder {
     getWAVBlob() {
         // 先停止
         this.stop();
-        return new Blob([ this.getWAV() ], { type: 'audio/wav' });
+        return new Blob([this.getWAV()], {type: 'audio/wav'});
     }
 
     /**
@@ -526,7 +532,7 @@ class Recorder {
      */
     downloadWAV(name: string = 'recorder'): void {
         let wavBlob = this.getWAVBlob();
-        
+
         this.download(wavBlob, name, 'wav');
     }
 
@@ -539,7 +545,7 @@ class Recorder {
      */
     private transformIntoPCM(lData, rData) {
         let lBuffer = new Float32Array(lData),
-            rBuffer = new Float32Array(rData);
+          rBuffer = new Float32Array(rData);
 
         let data = Recorder.compress({
             left: lBuffer,
@@ -597,11 +603,11 @@ class Recorder {
     private download(blob, name: string, type: string): void {
         try {
             let oA = document.createElement('a');
-            
+
             oA.href = window.URL.createObjectURL(blob);
             oA.download = name + '.' + type;
             oA.click();
-        } catch(e) {
+        } catch (e) {
             Recorder.throwError(e);
         }
     }
@@ -636,14 +642,14 @@ class Recorder {
 
     /**
      * 将二维数组转一维
-     * 
+     *
      * @private
      * @returns  {float32array}     音频pcm二进制数据
      * @memberof Recorder
      */
     private flat() {
         let lData = null,
-            rData = new Float32Array(0);    // 右声道默认为0
+          rData = new Float32Array(0);    // 右声道默认为0
 
         // 创建存放数据的容器
         if (1 === this.config.numChannels) {
@@ -675,9 +681,9 @@ class Recorder {
         };
     }
 
-    /** 
+    /**
      * 播放外部音乐文件
-     * 
+     *
      * @param {float32array} blob    blob音频数据
      * @memberof Recorder
      */
@@ -694,7 +700,7 @@ class Recorder {
      * 根据输入和输出的采样率压缩数据，
      * 比如输入的采样率是48k的，我们需要的是（输出）的是16k的，由于48k与16k是3倍关系，
      * 所以输入数据中每隔3取1位
-     * 
+     *
      * @static
      * @param {float32array} data       [-1, 1]的pcm数据
      * @param {number} inputSampleRate  输入采样率
@@ -705,18 +711,18 @@ class Recorder {
     static compress(data, inputSampleRate: number, outputSampleRate: number) {
         // 压缩，根据采样率进行压缩
         let rate = inputSampleRate / outputSampleRate,
-            compression = Math.max(rate, 1),
-            lData = data.left,
-            rData = data.right,
-            length = Math.floor(( lData.length + rData.length ) / rate),
-            result = new Float32Array(length),
-            index = 0,
-            j = 0;
+          compression = Math.max(rate, 1),
+          lData = data.left,
+          rData = data.right,
+          length = Math.floor((lData.length + rData.length) / rate),
+          result = new Float32Array(length),
+          index = 0,
+          j = 0;
 
         // 循环间隔 compression 位取一位数据
         while (index < length) {
             let temp = Math.floor(j)
-            
+
             result[index] = lData[temp];
             index++;
 
@@ -729,7 +735,7 @@ class Recorder {
                 result[index] = rData[temp];
                 index++;
             }
-            
+
             j += compression;
         }
         // 返回压缩后的一维数据
@@ -738,7 +744,7 @@ class Recorder {
 
     /**
      * 转换到我们需要的对应格式的编码
-     * 
+     *
      * @static
      * @param {float32array} bytes      pcm二进制数据
      * @param {number}  sampleBits      采样位数
@@ -748,16 +754,16 @@ class Recorder {
      */
     static encodePCM(bytes, sampleBits: number, littleEdian: boolean = true) {
         let offset = 0,
-            dataLength = bytes.length * (sampleBits / 8),
-            buffer = new ArrayBuffer(dataLength),
-            data = new DataView(buffer);
-    
+          dataLength = bytes.length * (sampleBits / 8),
+          buffer = new ArrayBuffer(dataLength),
+          data = new DataView(buffer);
+
         // 写入采样数据
         if (sampleBits === 8) {
             for (let i = 0; i < bytes.length; i++, offset++) {
                 // 范围[-1, 1]
                 let s = Math.max(-1, Math.min(1, bytes[i]));
-                // 8位采样位划分成2^8=256份，它的范围是0-255; 
+                // 8位采样位划分成2^8=256份，它的范围是0-255;
                 // 对于8位的话，负数*128，正数*127，然后整体向上平移128(+128)，即可得到[0,255]范围的数据。
                 let val = s < 0 ? s * 128 : s * 127;
                 val = +val + 128;
@@ -771,14 +777,14 @@ class Recorder {
                 data.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7FFF, littleEdian);
             }
         }
-    
+
         return data;
     }
 
     /**
      * 编码wav，一般wav格式是在pcm文件前增加44个字节的文件头，
      * 所以，此处只需要在pcm数据前增加下就行了。
-     * 
+     *
      * @static
      * @param {DataView} bytes           pcm二进制数据
      * @param {number}  inputSampleRate  输入采样率
@@ -791,46 +797,59 @@ class Recorder {
      */
     static encodeWAV(bytes: dataview, inputSampleRate: number, outputSampleRate: number, numChannels: number, oututSampleBits: number, littleEdian: boolean = true) {
         let sampleRate = outputSampleRate > inputSampleRate ? inputSampleRate : outputSampleRate,   // 输出采样率较大时，仍使用输入的值，
-            sampleBits = oututSampleBits,
-            buffer = new ArrayBuffer(44 + bytes.byteLength),
-            data = new DataView(buffer),
-            channelCount = numChannels, // 声道
-            offset = 0;
-    
+          sampleBits = oututSampleBits,
+          buffer = new ArrayBuffer(44 + bytes.byteLength),
+          data = new DataView(buffer),
+          channelCount = numChannels, // 声道
+          offset = 0;
+
         // 资源交换文件标识符
-        writeString(data, offset, 'RIFF'); offset += 4;
+        writeString(data, offset, 'RIFF');
+        offset += 4;
         // 下个地址开始到文件尾总字节数,即文件大小-8
-        data.setUint32(offset, 36 + bytes.byteLength, littleEdian); offset += 4;
+        data.setUint32(offset, 36 + bytes.byteLength, littleEdian);
+        offset += 4;
         // WAV文件标志
-        writeString(data, offset, 'WAVE'); offset += 4;
+        writeString(data, offset, 'WAVE');
+        offset += 4;
         // 波形格式标志
-        writeString(data, offset, 'fmt '); offset += 4;
+        writeString(data, offset, 'fmt ');
+        offset += 4;
         // 过滤字节,一般为 0x10 = 16
-        data.setUint32(offset, 16, littleEdian); offset += 4;
+        data.setUint32(offset, 16, littleEdian);
+        offset += 4;
         // 格式类别 (PCM形式采样数据)
-        data.setUint16(offset, 1, littleEdian); offset += 2;
+        data.setUint16(offset, 1, littleEdian);
+        offset += 2;
         // 声道数
-        data.setUint16(offset, channelCount, littleEdian); offset += 2;
+        data.setUint16(offset, channelCount, littleEdian);
+        offset += 2;
         // 采样率,每秒样本数,表示每个通道的播放速度
-        data.setUint32(offset, sampleRate, littleEdian); offset += 4;
+        data.setUint32(offset, sampleRate, littleEdian);
+        offset += 4;
         // 波形数据传输率 (每秒平均字节数) 声道数 × 采样频率 × 采样位数 / 8
-        data.setUint32(offset, channelCount * sampleRate * (sampleBits / 8), littleEdian); offset += 4;
+        data.setUint32(offset, channelCount * sampleRate * (sampleBits / 8), littleEdian);
+        offset += 4;
         // 快数据调整数 采样一次占用字节数 声道数 × 采样位数 / 8
-        data.setUint16(offset, channelCount * (sampleBits / 8), littleEdian); offset += 2;
+        data.setUint16(offset, channelCount * (sampleBits / 8), littleEdian);
+        offset += 2;
         // 采样位数
-        data.setUint16(offset, sampleBits, littleEdian); offset += 2;
+        data.setUint16(offset, sampleBits, littleEdian);
+        offset += 2;
         // 数据标识符
-        writeString(data, offset, 'data'); offset += 4;
+        writeString(data, offset, 'data');
+        offset += 4;
         // 采样数据总数,即数据总大小-44
-        data.setUint32(offset, bytes.byteLength, littleEdian); offset += 4;
-        
+        data.setUint32(offset, bytes.byteLength, littleEdian);
+        offset += 4;
+
         // 给wav头增加pcm体
         for (let i = 0; i < bytes.byteLength;) {
             data.setUint8(offset, bytes.getUint8(i));
             offset++;
             i++;
         }
-    
+
         return data;
     }
 
@@ -841,7 +860,7 @@ class Recorder {
      * @memberof Recorder
      */
     static throwError(message: string) {
-        throw new Error (message);
+        throw new Error(message);
     }
 }
 
